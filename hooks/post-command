@@ -149,6 +149,14 @@ else
   echo "using image '$targetimageref' from parameters"
 fi
 
+# Is it a helm chart, find the images referenced to scan
+if [[ -z "$targetimageref" ]]; then
+  if [[ HELM_CHART ||  -f Chart.yaml ]] ; then
+    targetimageref=$(helm template . | yq -N '..|.image? | select(.)' | sort | uniq)
+  fi
+fi
+
+
 # We can't parse an image if we have no references to parse.
 # This might be intended, so let's just pass.
 if [[ -z "$targetimageref" ]]; then
@@ -157,21 +165,31 @@ if [[ -z "$targetimageref" ]]; then
   exit $final_status
 fi
 
-# If the image is not present locally, pull it
-if [[ -z $(docker images -q "$targetimageref" 2> /dev/null) ]]; then
-  docker pull "$targetimageref"
-else
-  echo "image '$targetimageref' already present locally"
-fi
+# Could be more than one image, iterate over them
+for image in $targetimageref
+do
+  echo $image
+  # If the image is not present locally, pull it
+  if [[ -z $(docker images -q "$image" 2> /dev/null) ]]; then
+    docker pull "$image"
+  else
+    echo "image '$image' already present locally"
+  fi
 
-echo "+++ scanning container image"
-trivy image "${args[@]}" "$targetimageref"
-status=$?
+  echo "+++ scanning container image"
+  trivy image "${args[@]}" "$image"
+  status=$?
 
-if [[ $status -ne 0 ]]; then
-  fail_with_message "trivy-container-scan" "trivy found vulnerabilities in the container image. See the job output for details."
-else
-  display_success "trivy-container-scan" "trivy didn't find any relevant vulnerabilities in the container image"
-fi
+  # Only overwrite scanstatus if currently set to success
+  # That we we continue to scan all images, but don't forget a failure
+  if [[ $final_status -eq 0 ]]; then
+    final_status=$status
+  fi
+  if [[ $status -ne 0 ]]; then
+    display_error "trivy-container-scan" "trivy found vulnerabilities in the container image. See the job output for details."
+  else
+    display_success "trivy-container-scan" "trivy didn't find any relevant vulnerabilities in the container image"
+  fi
+done
 
 exit $final_status
